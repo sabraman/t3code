@@ -236,7 +236,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       if (row.kind === "working") return 40;
       return estimateTimelineMessageHeight(row.message, { timelineWidthPx });
     },
-    measureElement: measureVirtualElement,
+    measureElement: (element, entry, instance) => {
+      const index = instance.indexFromElement(element);
+      const row = rows[index];
+      const nextSize = measureVirtualElement(element, entry, instance);
+      if (!row) {
+        return nextSize;
+      }
+
+      const previousSize = measuredHeightByRowIdRef.current.get(row.id);
+      if (previousSize !== undefined && Math.abs(nextSize - previousSize) <= 1) {
+        return previousSize;
+      }
+
+      measuredHeightByRowIdRef.current.set(row.id, nextSize);
+      return nextSize;
+    },
     useAnimationFrameWithResizeObserver: true,
     overscan: 8,
   });
@@ -245,17 +260,66 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     rowVirtualizer.measure();
   }, [rowVirtualizer, timelineWidthPx]);
   useEffect(() => {
-    rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (_item, _delta, instance) => {
+    rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
       const viewportHeight = instance.scrollRect?.height ?? 0;
       const scrollOffset = instance.scrollOffset ?? 0;
       const remainingDistance = instance.getTotalSize() - (scrollOffset + viewportHeight);
-      return remainingDistance > AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
+      const changedItemStartsAboveViewport = item.start < scrollOffset;
+      return changedItemStartsAboveViewport && remainingDistance > AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
     };
     return () => {
       rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined;
     };
   }, [rowVirtualizer]);
   const pendingMeasureFrameRef = useRef<number | null>(null);
+  const measuredHeightByRowIdRef = useRef(new Map<string, number>());
+  const virtualRowElementsByIdRef = useRef(new Map<string, HTMLDivElement>());
+  const virtualRowRefCallbacksByIdRef = useRef(
+    new Map<string, (element: HTMLDivElement | null) => void>(),
+  );
+  const dirtyVirtualRowIdsRef = useRef(new Set<string>());
+  const previousHeightSignatureByRowIdRef = useRef(new Map<string, string>());
+
+  const clearVirtualRowMeasurementTracking = useCallback((rowId: string) => {
+    virtualRowElementsByIdRef.current.delete(rowId);
+  }, []);
+
+  const clearAllVirtualRowMeasurementTracking = useCallback(() => {
+    const trackedRowIds = new Set<string>(virtualRowElementsByIdRef.current.keys());
+    for (const rowId of trackedRowIds) {
+      clearVirtualRowMeasurementTracking(rowId);
+    }
+  }, [clearVirtualRowMeasurementTracking]);
+
+  const getVirtualRowRef = useCallback(
+    (rowId: string) => {
+      const cachedCallback = virtualRowRefCallbacksByIdRef.current.get(rowId);
+      if (cachedCallback) {
+        return cachedCallback;
+      }
+
+      const callback = (element: HTMLDivElement | null) => {
+        const previousElement = virtualRowElementsByIdRef.current.get(rowId);
+        if (previousElement === element) {
+          return;
+        }
+
+        clearVirtualRowMeasurementTracking(rowId);
+
+        if (!element) {
+          return;
+        }
+
+        virtualRowElementsByIdRef.current.set(rowId, element);
+        rowVirtualizer.measureElement(element);
+      };
+
+      virtualRowRefCallbacksByIdRef.current.set(rowId, callback);
+      return callback;
+    },
+    [clearVirtualRowMeasurementTracking, rowVirtualizer],
+  );
+
   const onTimelineImageLoad = useCallback(() => {
     if (pendingMeasureFrameRef.current !== null) return;
     pendingMeasureFrameRef.current = window.requestAnimationFrame(() => {
@@ -269,8 +333,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       if (frame !== null) {
         window.cancelAnimationFrame(frame);
       }
+      clearAllVirtualRowMeasurementTracking();
     };
-  }, []);
+  }, [clearAllVirtualRowMeasurementTracking]);
 
   const virtualRows = rowVirtualizer.getVirtualItems();
   const nonVirtualizedRows = rows.slice(virtualizedRowCount);
@@ -283,6 +348,105 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       [turnId]: !(current[turnId] ?? true),
     }));
   }, []);
+
+  const virtualizedHeightSignatures = useMemo(() => {
+    const nextSignatures = new Map<string, string>();
+    for (const row of rows.slice(0, virtualizedRowCount)) {
+      if (row.kind === "work") {
+        nextSignatures.set(row.id, `work:${row.id}:${row.groupedEntries.length}`);
+        continue;
+      }
+
+      if (row.kind === "proposed-plan") {
+        nextSignatures.set(
+          row.id,
+          `proposed-plan:${row.id}:${row.proposedPlan.planMarkdown.length}`,
+        );
+        continue;
+      }
+
+      if (row.kind === "working") {
+        nextSignatures.set(row.id, `working:${row.id}`);
+        continue;
+      }
+
+      const diffSummary =
+        row.message.role === "assistant"
+          ? turnDiffSummaryByAssistantMessageId.get(row.message.id)
+          : undefined;
+      const diffSummaryTurnId = diffSummary?.turnId ?? "";
+      const diffSummaryFileCount = diffSummary?.files.length ?? 0;
+      const allDirectoriesExpanded =
+        diffSummary === undefined
+          ? ""
+          : String(allDirectoriesExpandedByTurnId[diffSummary.turnId] ?? true);
+
+      nextSignatures.set(
+        row.id,
+        [
+          "message",
+          row.id,
+          row.message.role,
+          row.message.text.length,
+          row.message.streaming ? 1 : 0,
+          row.message.attachments?.length ?? 0,
+          row.showCompletionDivider ? 1 : 0,
+          diffSummary ? 1 : 0,
+          diffSummaryTurnId,
+          diffSummaryFileCount,
+          allDirectoriesExpanded,
+        ].join(":"),
+      );
+    }
+    return nextSignatures;
+  }, [
+    rows,
+    virtualizedRowCount,
+    turnDiffSummaryByAssistantMessageId,
+    allDirectoriesExpandedByTurnId,
+  ]);
+
+  useLayoutEffect(() => {
+    const previousSignatures = previousHeightSignatureByRowIdRef.current;
+    const dirtyRowIds = dirtyVirtualRowIdsRef.current;
+
+    for (const [rowId, signature] of virtualizedHeightSignatures) {
+      if (previousSignatures.get(rowId) !== signature) {
+        dirtyRowIds.add(rowId);
+      }
+    }
+
+    for (const rowId of previousSignatures.keys()) {
+      if (!virtualizedHeightSignatures.has(rowId)) {
+        previousSignatures.delete(rowId);
+        virtualRowElementsByIdRef.current.delete(rowId);
+        virtualRowRefCallbacksByIdRef.current.delete(rowId);
+        measuredHeightByRowIdRef.current.delete(rowId);
+        dirtyRowIds.delete(rowId);
+      }
+    }
+
+    previousHeightSignatureByRowIdRef.current = new Map(virtualizedHeightSignatures);
+  }, [virtualizedHeightSignatures]);
+
+  useLayoutEffect(() => {
+    if (virtualizedRowCount === 0) return;
+    rowVirtualizer.measure();
+  }, [rowVirtualizer, virtualizedRowCount]);
+
+  useLayoutEffect(() => {
+    const dirtyRowIds = Array.from(dirtyVirtualRowIdsRef.current);
+    if (dirtyRowIds.length === 0) return;
+
+    for (const rowId of dirtyRowIds) {
+      const element = virtualRowElementsByIdRef.current.get(rowId);
+      if (!element) {
+        continue;
+      }
+      rowVirtualizer.measureElement(element);
+    }
+    dirtyVirtualRowIdsRef.current.clear();
+  }, [rowVirtualizer, virtualizedHeightSignatures]);
 
   const renderRowContent = (row: TimelineRow) => (
     <div
@@ -554,7 +718,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               <div
                 key={`virtual-row:${row.id}`}
                 data-index={virtualRow.index}
-                ref={rowVirtualizer.measureElement}
+                ref={getVirtualRowRef(row.id)}
                 className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >

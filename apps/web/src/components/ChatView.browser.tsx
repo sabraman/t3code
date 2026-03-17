@@ -2,12 +2,14 @@
 import "../index.css";
 
 import {
+  CheckpointRef,
   ORCHESTRATION_WS_METHODS,
   type MessageId,
   type OrchestrationReadModel,
   type ProjectId,
   type ServerConfig,
   type ThreadId,
+  type TurnId,
   type WsWelcomePayload,
   WS_CHANNELS,
   WS_METHODS,
@@ -32,6 +34,7 @@ const PROJECT_ID = "project-1" as ProjectId;
 const NOW_ISO = "2026-03-04T12:00:00.000Z";
 const BASE_TIME_MS = Date.parse(NOW_ISO);
 const ATTACHMENT_SVG = "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='300'></svg>";
+const BUTTON_POSITION_TOLERANCE_PX = 6;
 
 interface WsRequestEnvelope {
   id: string;
@@ -86,6 +89,7 @@ interface UserRowMeasurement {
 
 interface MountedChatView {
   cleanup: () => Promise<void>;
+  host: HTMLElement;
   measureUserRow: (targetMessageId: MessageId) => Promise<UserRowMeasurement>;
   setViewport: (viewport: ViewportSpec) => Promise<void>;
   router: ReturnType<typeof getRouter>;
@@ -234,6 +238,120 @@ function createSnapshotForTargetUser(options: {
       },
     ],
     updatedAt: NOW_ISO,
+  };
+}
+
+function createSnapshotWithVirtualizedAssistantDiffSummary(options?: {
+  pairCount?: number;
+  overlapPairIndex?: number;
+}): {
+  assistantMessageId: MessageId;
+  snapshot: OrchestrationReadModel;
+  userMessageId: MessageId;
+} {
+  const pairCount = options?.pairCount ?? 5;
+  const overlapPairIndex = options?.overlapPairIndex ?? 0;
+  const turnId = "turn-overlap-virtualized" as TurnId;
+  const assistantMessageId = "msg-assistant-overlap-target" as MessageId;
+  const userMessageId = "msg-user-overlap-next" as MessageId;
+  const messages: Array<OrchestrationReadModel["threads"][number]["messages"][number]> = [];
+
+  for (let index = 0; index < pairCount; index += 1) {
+    const isOverlapPair = index === overlapPairIndex;
+    messages.push(
+      createUserMessage({
+        id: (isOverlapPair ? "msg-user-overlap-anchor" : `msg-user-overlap-${index}`) as MessageId,
+        text: isOverlapPair ? "anchor prompt" : `filler user message ${index}`,
+        offsetSeconds: messages.length * 3,
+      }),
+    );
+    messages.push(
+      createAssistantMessage({
+        id: isOverlapPair ? assistantMessageId : (`msg-assistant-overlap-${index}` as MessageId),
+        text: isOverlapPair
+          ? "assistant response with a large changed files summary"
+          : `assistant filler ${index}`,
+        offsetSeconds: messages.length * 3,
+      }),
+    );
+  }
+
+  const overlapNextUserMessageIndex = overlapPairIndex * 2 + 2;
+  messages[overlapNextUserMessageIndex] = createUserMessage({
+    id: userMessageId,
+    text: "user message immediately after the virtualized assistant row",
+    offsetSeconds: overlapNextUserMessageIndex * 3,
+  });
+
+  const files = Array.from({ length: 18 }, (_, index) => {
+    const directory = `packages/feature-${Math.floor(index / 3) + 1}`;
+    const nestedDirectory = `${directory}/deep-${(index % 3) + 1}`;
+    return {
+      path: `${nestedDirectory}/file-${index + 1}.ts`,
+      kind: "modified",
+      additions: 10 + index,
+      deletions: index % 4,
+    };
+  });
+
+  return {
+    assistantMessageId,
+    userMessageId,
+    snapshot: {
+      snapshotSequence: 1,
+      projects: [
+        {
+          id: PROJECT_ID,
+          title: "Project",
+          workspaceRoot: "/repo/project",
+          defaultModel: "gpt-5",
+          scripts: [],
+          createdAt: NOW_ISO,
+          updatedAt: NOW_ISO,
+          deletedAt: null,
+        },
+      ],
+      threads: [
+        {
+          id: THREAD_ID,
+          projectId: PROJECT_ID,
+          title: "Browser test thread",
+          model: "gpt-5",
+          interactionMode: "default",
+          runtimeMode: "full-access",
+          branch: "main",
+          worktreePath: null,
+          latestTurn: null,
+          createdAt: NOW_ISO,
+          updatedAt: NOW_ISO,
+          deletedAt: null,
+          messages,
+          activities: [],
+          proposedPlans: [],
+          checkpoints: [
+            {
+              turnId,
+              checkpointTurnCount: 1,
+              checkpointRef: CheckpointRef.makeUnsafe("checkpoint-overlap-1"),
+              status: "ready",
+              files,
+              assistantMessageId,
+              completedAt: isoAt(30),
+            },
+          ],
+          session: {
+            threadId: THREAD_ID,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: NOW_ISO,
+          },
+        },
+      ],
+      updatedAt: NOW_ISO,
+    },
   };
 }
 
@@ -564,6 +682,118 @@ async function waitForImagesToLoad(scope: ParentNode): Promise<void> {
   await waitForLayout();
 }
 
+async function waitForMessageRow(options: {
+  host: HTMLElement;
+  messageId: MessageId;
+  role: "assistant" | "user";
+}): Promise<HTMLElement> {
+  return waitForElement(
+    () =>
+      options.host.querySelector<HTMLElement>(
+        `[data-message-id="${options.messageId}"][data-message-role="${options.role}"]`,
+      ),
+    `Unable to locate ${options.role} message row ${options.messageId}.`,
+  );
+}
+
+async function scrollElementIntoView(element: HTMLElement): Promise<void> {
+  element.scrollIntoView({ block: "center" });
+  await waitForLayout();
+}
+
+async function waitForMessageRowButton(options: {
+  host: HTMLElement;
+  messageId: MessageId;
+  role: "assistant" | "user";
+  label: string;
+}): Promise<HTMLButtonElement> {
+  let button: HTMLButtonElement | null = null;
+  await vi.waitFor(
+    () => {
+      const row = options.host.querySelector<HTMLElement>(
+        `[data-message-id="${options.messageId}"][data-message-role="${options.role}"]`,
+      );
+      button =
+        row &&
+        (Array.from(row.querySelectorAll("button")).find(
+          (candidate) => candidate.textContent?.trim() === options.label,
+        ) as HTMLButtonElement | null);
+      expect(
+        button,
+        `Unable to locate "${options.label}" button in ${options.role} message row ${options.messageId}.`,
+      ).toBeTruthy();
+    },
+    {
+      timeout: 8_000,
+      interval: 16,
+    },
+  );
+  if (!button) {
+    throw new Error(
+      `Unable to locate "${options.label}" button in ${options.role} message row ${options.messageId}.`,
+    );
+  }
+  return button;
+}
+
+async function waitForNoVerticalOverlap(options: {
+  host: HTMLElement;
+  previousAssistantMessageId: MessageId;
+  nextUserMessageId: MessageId;
+}): Promise<{
+  assistantRenderedInVirtualizedRegion: boolean;
+  nextUserRenderedInVirtualizedRegion: boolean;
+}> {
+  let assistantRenderedInVirtualizedRegion = false;
+  let nextUserRenderedInVirtualizedRegion = false;
+
+  await vi.waitFor(
+    async () => {
+      await waitForLayout();
+      const assistantRow = await waitForMessageRow({
+        host: options.host,
+        messageId: options.previousAssistantMessageId,
+        role: "assistant",
+      });
+      const nextUserRow = await waitForMessageRow({
+        host: options.host,
+        messageId: options.nextUserMessageId,
+        role: "user",
+      });
+
+      const assistantRect = assistantRow.getBoundingClientRect();
+      const nextUserRect = nextUserRow.getBoundingClientRect();
+      assistantRenderedInVirtualizedRegion =
+        assistantRow.closest("[data-index]") instanceof HTMLElement;
+      nextUserRenderedInVirtualizedRegion =
+        nextUserRow.closest("[data-index]") instanceof HTMLElement;
+
+      expect(
+        assistantRect.bottom,
+        "Expected the previous assistant row to end before the following user row starts.",
+      ).toBeLessThanOrEqual(nextUserRect.top + 1);
+    },
+    {
+      timeout: 8_000,
+      interval: 16,
+    },
+  );
+
+  return { assistantRenderedInVirtualizedRegion, nextUserRenderedInVirtualizedRegion };
+}
+
+async function clickButtonByText(host: HTMLElement, label: string): Promise<void> {
+  const button = await waitForElement(
+    () =>
+      Array.from(host.querySelectorAll("button")).find(
+        (candidate) => candidate.textContent?.trim() === label,
+      ) as HTMLButtonElement | null,
+    `Unable to find "${label}" button.`,
+  );
+  button.click();
+  await waitForLayout();
+}
+
 async function measureUserRow(options: {
   host: HTMLElement;
   targetMessageId: MessageId;
@@ -664,6 +894,7 @@ async function mountChatView(options: {
       await screen.unmount();
       host.remove();
     },
+    host,
     measureUserRow: async (targetMessageId: MessageId) => measureUserRow({ host, targetMessageId }),
     setViewport: async (viewport: ViewportSpec) => {
       await setViewport(viewport);
@@ -888,6 +1119,164 @@ describe("ChatView timeline estimator parity (full app)", () => {
       }
     },
   );
+
+  it("keeps the last virtualized assistant diff summary from overlapping the next user row", async () => {
+    const overlapFixture = createSnapshotWithVirtualizedAssistantDiffSummary();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: overlapFixture.snapshot,
+    });
+
+    try {
+      const initialMeasurement = await waitForNoVerticalOverlap({
+        host: mounted.host,
+        previousAssistantMessageId: overlapFixture.assistantMessageId,
+        nextUserMessageId: overlapFixture.userMessageId,
+      });
+
+      expect(initialMeasurement.assistantRenderedInVirtualizedRegion).toBe(true);
+      expect(initialMeasurement.nextUserRenderedInVirtualizedRegion).toBe(false);
+
+      await clickButtonByText(mounted.host, "Collapse all");
+      await waitForNoVerticalOverlap({
+        host: mounted.host,
+        previousAssistantMessageId: overlapFixture.assistantMessageId,
+        nextUserMessageId: overlapFixture.userMessageId,
+      });
+
+      await clickButtonByText(mounted.host, "Expand all");
+      await waitForNoVerticalOverlap({
+        host: mounted.host,
+        previousAssistantMessageId: overlapFixture.assistantMessageId,
+        nextUserMessageId: overlapFixture.userMessageId,
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps adjacent virtualized rows from overlapping when an assistant diff summary is tall", async () => {
+    const overlapFixture = createSnapshotWithVirtualizedAssistantDiffSummary({
+      pairCount: 12,
+      overlapPairIndex: 2,
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: overlapFixture.snapshot,
+    });
+
+    try {
+      const measurement = await waitForNoVerticalOverlap({
+        host: mounted.host,
+        previousAssistantMessageId: overlapFixture.assistantMessageId,
+        nextUserMessageId: overlapFixture.userMessageId,
+      });
+
+      expect(measurement.assistantRenderedInVirtualizedRegion).toBe(true);
+      expect(measurement.nextUserRenderedInVirtualizedRegion).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the virtualized diff-summary button position stable enough after collapse", async () => {
+    const overlapFixture = createSnapshotWithVirtualizedAssistantDiffSummary();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: overlapFixture.snapshot,
+    });
+
+    try {
+      const measurement = await waitForNoVerticalOverlap({
+        host: mounted.host,
+        previousAssistantMessageId: overlapFixture.assistantMessageId,
+        nextUserMessageId: overlapFixture.userMessageId,
+      });
+
+      expect(measurement.assistantRenderedInVirtualizedRegion).toBe(true);
+
+      const collapseButton = await waitForMessageRowButton({
+        host: mounted.host,
+        messageId: overlapFixture.assistantMessageId,
+        role: "assistant",
+        label: "Collapse all",
+      });
+      await scrollElementIntoView(collapseButton);
+      const collapseButtonTop = collapseButton.getBoundingClientRect().top;
+
+      collapseButton.click();
+      await waitForLayout();
+
+      const expandButton = await waitForMessageRowButton({
+        host: mounted.host,
+        messageId: overlapFixture.assistantMessageId,
+        role: "assistant",
+        label: "Expand all",
+      });
+      await scrollElementIntoView(expandButton);
+      const expandButtonTop = expandButton.getBoundingClientRect().top;
+
+      expect(Math.abs(expandButtonTop - collapseButtonTop)).toBeLessThanOrEqual(
+        BUTTON_POSITION_TOLERANCE_PX,
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the virtualized diff-summary button position stable enough after expand", async () => {
+    const overlapFixture = createSnapshotWithVirtualizedAssistantDiffSummary();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: overlapFixture.snapshot,
+    });
+
+    try {
+      const measurement = await waitForNoVerticalOverlap({
+        host: mounted.host,
+        previousAssistantMessageId: overlapFixture.assistantMessageId,
+        nextUserMessageId: overlapFixture.userMessageId,
+      });
+
+      expect(measurement.assistantRenderedInVirtualizedRegion).toBe(true);
+
+      const collapseButton = await waitForMessageRowButton({
+        host: mounted.host,
+        messageId: overlapFixture.assistantMessageId,
+        role: "assistant",
+        label: "Collapse all",
+      });
+      await scrollElementIntoView(collapseButton);
+      collapseButton.click();
+      await waitForLayout();
+
+      const expandButton = await waitForMessageRowButton({
+        host: mounted.host,
+        messageId: overlapFixture.assistantMessageId,
+        role: "assistant",
+        label: "Expand all",
+      });
+      await scrollElementIntoView(expandButton);
+      const expandButtonTop = expandButton.getBoundingClientRect().top;
+
+      expandButton.click();
+      await waitForLayout();
+
+      const nextCollapseButton = await waitForMessageRowButton({
+        host: mounted.host,
+        messageId: overlapFixture.assistantMessageId,
+        role: "assistant",
+        label: "Collapse all",
+      });
+      const nextCollapseButtonTop = nextCollapseButton.getBoundingClientRect().top;
+
+      expect(Math.abs(nextCollapseButtonTop - expandButtonTop)).toBeLessThanOrEqual(
+        BUTTON_POSITION_TOLERANCE_PX,
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
   it("opens the project cwd for draft threads without a worktree path", async () => {
     useComposerDraftStore.setState({

@@ -1530,6 +1530,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
       );
       if (!trigger || !scrollContainer.contains(trigger)) return;
       if (trigger.closest("[data-scroll-anchor-ignore]")) return;
+      const virtualizedRow = trigger.closest<HTMLElement>("[data-index]");
+      if (virtualizedRow && virtualizedRow.closest('[data-timeline-root="true"]')) return;
 
       pendingInteractionAnchorRef.current = {
         element: trigger,
