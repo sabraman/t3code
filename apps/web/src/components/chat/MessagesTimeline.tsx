@@ -8,7 +8,7 @@ import {
 import { deriveTimelineEntries, formatElapsed } from "../../session-logic";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX } from "../../chat-scroll";
 import { type TurnDiffSummary } from "../../types";
-import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
+import { countVisibleTurnDiffTreeNodes, summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
@@ -39,6 +39,9 @@ import { formatTimestamp } from "../../timestampFormat";
 
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
+const ASSISTANT_COMPLETION_DIVIDER_HEIGHT_PX = 48;
+const ASSISTANT_DIFF_SUMMARY_BASE_HEIGHT_PX = 74;
+const ASSISTANT_DIFF_TREE_NODE_HEIGHT_PX = 24;
 
 interface MessagesTimelineProps {
   hasMessages: boolean;
@@ -222,6 +225,30 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     minimum: 0,
     maximum: rows.length,
   });
+  const [allDirectoriesExpandedByTurnId, setAllDirectoriesExpandedByTurnId] = useState<
+    Record<string, boolean>
+  >({});
+  const onToggleAllDirectories = useCallback((turnId: TurnId) => {
+    setAllDirectoriesExpandedByTurnId((current) => ({
+      ...current,
+      [turnId]: !(current[turnId] ?? true),
+    }));
+  }, []);
+  const diffSummaryHeightByAssistantMessageId = useMemo(() => {
+    const nextHeights = new Map<MessageId, number>();
+    for (const [assistantMessageId, turnSummary] of turnDiffSummaryByAssistantMessageId) {
+      const visibleNodeCount = countVisibleTurnDiffTreeNodes(
+        turnSummary.files,
+        allDirectoriesExpandedByTurnId[turnSummary.turnId] ?? true,
+      );
+      nextHeights.set(
+        assistantMessageId,
+        ASSISTANT_DIFF_SUMMARY_BASE_HEIGHT_PX +
+          visibleNodeCount * ASSISTANT_DIFF_TREE_NODE_HEIGHT_PX,
+      );
+    }
+    return nextHeights;
+  }, [allDirectoriesExpandedByTurnId, turnDiffSummaryByAssistantMessageId]);
 
   const rowVirtualizer = useVirtualizer({
     count: virtualizedRowCount,
@@ -234,7 +261,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       if (row.kind === "work") return 112;
       if (row.kind === "proposed-plan") return estimateTimelineProposedPlanHeight(row.proposedPlan);
       if (row.kind === "working") return 40;
-      return estimateTimelineMessageHeight(row.message, { timelineWidthPx });
+      let estimatedHeight = estimateTimelineMessageHeight(row.message, { timelineWidthPx });
+      if (row.showCompletionDivider) {
+        estimatedHeight += ASSISTANT_COMPLETION_DIVIDER_HEIGHT_PX;
+      }
+      if (row.message.role === "assistant") {
+        estimatedHeight += diffSummaryHeightByAssistantMessageId.get(row.message.id) ?? 0;
+      }
+      return estimatedHeight;
     },
     measureElement: (element, entry, instance) => {
       const index = instance.indexFromElement(element);
@@ -339,15 +373,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const virtualRows = rowVirtualizer.getVirtualItems();
   const nonVirtualizedRows = rows.slice(virtualizedRowCount);
-  const [allDirectoriesExpandedByTurnId, setAllDirectoriesExpandedByTurnId] = useState<
-    Record<string, boolean>
-  >({});
-  const onToggleAllDirectories = useCallback((turnId: TurnId) => {
-    setAllDirectoriesExpandedByTurnId((current) => ({
-      ...current,
-      [turnId]: !(current[turnId] ?? true),
-    }));
-  }, []);
 
   const virtualizedHeightSignatures = useMemo(() => {
     const nextSignatures = new Map<string, string>();

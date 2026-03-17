@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { buildTurnDiffTree, summarizeTurnDiffStats } from "./turnDiffTree";
+import {
+  buildTurnDiffTree,
+  countVisibleTurnDiffTreeNodes,
+  summarizeTurnDiffStats,
+} from "./turnDiffTree";
 
 describe("summarizeTurnDiffStats", () => {
   it("sums only files with numeric additions/deletions", () => {
@@ -164,5 +168,18 @@ describe("buildTurnDiffTree", () => {
     );
     expect(directoryNodes.map((node) => node.name).toSorted()).toEqual([" a", "a"]);
     expect(directoryNodes.map((node) => node.path).toSorted()).toEqual([" a", "a"]);
+  });
+});
+
+describe("countVisibleTurnDiffTreeNodes", () => {
+  it("counts only top-level rows when collapsed and all rendered rows when expanded", () => {
+    const files = [
+      { path: "apps/web/src/index.ts", additions: 2, deletions: 1 },
+      { path: "apps/web/src/app.ts", additions: 1, deletions: 0 },
+      { path: "README.md", additions: 3, deletions: 1 },
+    ];
+
+    expect(countVisibleTurnDiffTreeNodes(files, false)).toBe(2);
+    expect(countVisibleTurnDiffTreeNodes(files, true)).toBe(5);
   });
 });
