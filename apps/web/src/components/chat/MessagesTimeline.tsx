@@ -8,7 +8,7 @@ import {
 import { deriveTimelineEntries, formatElapsed } from "../../session-logic";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX } from "../../chat-scroll";
 import { type TurnDiffSummary } from "../../types";
-import { countVisibleTurnDiffTreeNodes, summarizeTurnDiffStats } from "../../lib/turnDiffTree";
+import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
@@ -39,9 +39,6 @@ import { formatTimestamp } from "../../timestampFormat";
 
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
-const ASSISTANT_COMPLETION_DIVIDER_HEIGHT_PX = 48;
-const ASSISTANT_DIFF_SUMMARY_BASE_HEIGHT_PX = 74;
-const ASSISTANT_DIFF_TREE_NODE_HEIGHT_PX = 24;
 
 interface MessagesTimelineProps {
   hasMessages: boolean;
@@ -184,8 +181,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [timelineEntries, completionDividerBeforeEntryId, isWorking, activeTurnStartedAt]);
 
   const firstUnvirtualizedRowIndex = useMemo(() => {
+    const firstDiffSummaryRowIndex = rows.findIndex(
+      (row) =>
+        row.kind === "message" &&
+        row.message.role === "assistant" &&
+        turnDiffSummaryByAssistantMessageId.has(row.message.id),
+    );
     const firstTailRowIndex = Math.max(rows.length - ALWAYS_UNVIRTUALIZED_TAIL_ROWS, 0);
-    if (!activeTurnInProgress) return firstTailRowIndex;
+    let firstUnvirtualizedIndex = firstTailRowIndex;
+    if (firstDiffSummaryRowIndex >= 0) {
+      firstUnvirtualizedIndex = Math.min(firstUnvirtualizedIndex, firstDiffSummaryRowIndex);
+    }
+    if (!activeTurnInProgress) return firstUnvirtualizedIndex;
 
     const turnStartedAtMs =
       typeof activeTurnStartedAt === "string" ? Date.parse(activeTurnStartedAt) : Number.NaN;
@@ -205,21 +212,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       );
     }
 
-    if (firstCurrentTurnRowIndex < 0) return firstTailRowIndex;
+    if (firstCurrentTurnRowIndex < 0) return firstUnvirtualizedIndex;
 
     for (let index = firstCurrentTurnRowIndex - 1; index >= 0; index -= 1) {
       const previousRow = rows[index];
       if (!previousRow || previousRow.kind !== "message") continue;
       if (previousRow.message.role === "user") {
-        return Math.min(index, firstTailRowIndex);
+        return Math.min(index, firstUnvirtualizedIndex);
       }
       if (previousRow.message.role === "assistant" && !previousRow.message.streaming) {
         break;
       }
     }
 
-    return Math.min(firstCurrentTurnRowIndex, firstTailRowIndex);
-  }, [activeTurnInProgress, activeTurnStartedAt, rows]);
+    return Math.min(firstCurrentTurnRowIndex, firstUnvirtualizedIndex);
+  }, [activeTurnInProgress, activeTurnStartedAt, rows, turnDiffSummaryByAssistantMessageId]);
 
   const virtualizedRowCount = clamp(firstUnvirtualizedRowIndex, {
     minimum: 0,
@@ -234,21 +241,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       [turnId]: !(current[turnId] ?? true),
     }));
   }, []);
-  const diffSummaryHeightByAssistantMessageId = useMemo(() => {
-    const nextHeights = new Map<MessageId, number>();
-    for (const [assistantMessageId, turnSummary] of turnDiffSummaryByAssistantMessageId) {
-      const visibleNodeCount = countVisibleTurnDiffTreeNodes(
-        turnSummary.files,
-        allDirectoriesExpandedByTurnId[turnSummary.turnId] ?? true,
-      );
-      nextHeights.set(
-        assistantMessageId,
-        ASSISTANT_DIFF_SUMMARY_BASE_HEIGHT_PX +
-          visibleNodeCount * ASSISTANT_DIFF_TREE_NODE_HEIGHT_PX,
-      );
-    }
-    return nextHeights;
-  }, [allDirectoriesExpandedByTurnId, turnDiffSummaryByAssistantMessageId]);
 
   const rowVirtualizer = useVirtualizer({
     count: virtualizedRowCount,
@@ -261,14 +253,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       if (row.kind === "work") return 112;
       if (row.kind === "proposed-plan") return estimateTimelineProposedPlanHeight(row.proposedPlan);
       if (row.kind === "working") return 40;
-      let estimatedHeight = estimateTimelineMessageHeight(row.message, { timelineWidthPx });
-      if (row.showCompletionDivider) {
-        estimatedHeight += ASSISTANT_COMPLETION_DIVIDER_HEIGHT_PX;
-      }
-      if (row.message.role === "assistant") {
-        estimatedHeight += diffSummaryHeightByAssistantMessageId.get(row.message.id) ?? 0;
-      }
-      return estimatedHeight;
+      return estimateTimelineMessageHeight(row.message, { timelineWidthPx });
     },
     measureElement: (element, entry, instance) => {
       const index = instance.indexFromElement(element);

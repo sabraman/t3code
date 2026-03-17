@@ -115,6 +115,18 @@ function createBaseServerConfig(): ServerConfig {
       },
     ],
     availableEditors: [],
+    telegram: {
+      transport: "threaded-private",
+      mode: "disabled",
+      hasBotToken: false,
+      chatId: null,
+      chatTitle: null,
+      botUsername: null,
+      hasTopicsEnabled: null,
+      allowsUserCreatedTopics: null,
+      setupExpiresAt: null,
+      errorMessage: null,
+    },
   };
 }
 
@@ -1134,7 +1146,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         nextUserMessageId: overlapFixture.userMessageId,
       });
 
-      expect(initialMeasurement.assistantRenderedInVirtualizedRegion).toBe(true);
+      expect(initialMeasurement.assistantRenderedInVirtualizedRegion).toBe(false);
       expect(initialMeasurement.nextUserRenderedInVirtualizedRegion).toBe(false);
 
       await clickButtonByText(mounted.host, "Collapse all");
@@ -1155,7 +1167,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps adjacent virtualized rows from overlapping when an assistant diff summary is tall", async () => {
+  it("keeps assistant diff-summary rows and following rows out of the virtualized region", async () => {
     const overlapFixture = createSnapshotWithVirtualizedAssistantDiffSummary({
       pairCount: 12,
       overlapPairIndex: 2,
@@ -1172,14 +1184,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
         nextUserMessageId: overlapFixture.userMessageId,
       });
 
-      expect(measurement.assistantRenderedInVirtualizedRegion).toBe(true);
-      expect(measurement.nextUserRenderedInVirtualizedRegion).toBe(true);
+      expect(measurement.assistantRenderedInVirtualizedRegion).toBe(false);
+      expect(measurement.nextUserRenderedInVirtualizedRegion).toBe(false);
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("keeps the virtualized diff-summary button position stable enough after collapse", async () => {
+  it("keeps the diff-summary button position stable enough after collapse", async () => {
     const overlapFixture = createSnapshotWithVirtualizedAssistantDiffSummary();
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -1193,7 +1205,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         nextUserMessageId: overlapFixture.userMessageId,
       });
 
-      expect(measurement.assistantRenderedInVirtualizedRegion).toBe(true);
+      expect(measurement.assistantRenderedInVirtualizedRegion).toBe(false);
 
       const collapseButton = await waitForMessageRowButton({
         host: mounted.host,
@@ -1224,7 +1236,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps the virtualized diff-summary button position stable enough after expand", async () => {
+  it("keeps the diff-summary button position stable enough after expand", async () => {
     const overlapFixture = createSnapshotWithVirtualizedAssistantDiffSummary();
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -1238,7 +1250,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         nextUserMessageId: overlapFixture.userMessageId,
       });
 
-      expect(measurement.assistantRenderedInVirtualizedRegion).toBe(true);
+      expect(measurement.assistantRenderedInVirtualizedRegion).toBe(false);
 
       const collapseButton = await waitForMessageRowButton({
         host: mounted.host,
