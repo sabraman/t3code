@@ -1,14 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-
-const FAVICON_MIME_TYPES: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".svg": "image/svg+xml",
-  ".ico": "image/x-icon",
-};
+import Mime from "@effect/platform-node/Mime";
 
 const FALLBACK_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#6b728080" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" data-fallback="project-favicon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/></svg>`;
 
@@ -72,8 +65,7 @@ function isPathWithinProject(projectCwd: string, candidatePath: string): boolean
 }
 
 function serveFaviconFile(filePath: string, res: http.ServerResponse): void {
-  const ext = path.extname(filePath).toLowerCase();
-  const contentType = FAVICON_MIME_TYPES[ext] ?? "application/octet-stream";
+  const contentType = Mime.getType(filePath) ?? "application/octet-stream";
   fs.readFile(filePath, (readErr, data) => {
     if (readErr) {
       res.writeHead(500, { "Content-Type": "text/plain" });
