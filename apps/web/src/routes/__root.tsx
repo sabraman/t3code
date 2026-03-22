@@ -24,15 +24,14 @@ import { onServerConfigUpdated, onServerWelcome } from "../wsNativeApi";
 import { providerQueryKeys } from "../lib/providerReactQuery";
 import { projectQueryKeys } from "../lib/projectReactQuery";
 import { collectActiveTerminalThreadIds } from "../lib/terminalStateCleanup";
+import { getRootRouteHead } from "./rootRouteHead";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
 }>()({
   component: RootRouteView,
   errorComponent: RootRouteErrorView,
-  head: () => ({
-    meta: [{ name: "title", content: APP_DISPLAY_NAME }],
-  }),
+  head: () => getRootRouteHead(),
 });
 
 function RootRouteView() {
