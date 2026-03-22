@@ -117,6 +117,25 @@ describe("tryHandleProjectFaviconRequest", () => {
     });
   });
 
+  it("serves jpeg icons discovered from source metadata with the correct content type", async () => {
+    const projectDir = makeTempDir("t3code-favicon-route-jpeg-");
+    const iconPath = path.join(projectDir, "public", "brand", "logo.jpeg");
+    fs.mkdirSync(path.dirname(iconPath), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDir, "index.html"),
+      '<link rel="icon" href="/brand/logo.jpeg">',
+    );
+    fs.writeFileSync(iconPath, "jpeg-favicon", "utf8");
+
+    await withRouteServer(async (baseUrl) => {
+      const pathname = `/api/project-favicon?cwd=${encodeURIComponent(projectDir)}`;
+      const response = await request(baseUrl, pathname);
+      expect(response.statusCode).toBe(200);
+      expect(response.contentType).toContain("image/jpeg");
+      expect(response.body).toBe("jpeg-favicon");
+    });
+  });
+
   it("resolves icon link when href appears before rel in HTML", async () => {
     const projectDir = makeTempDir("t3code-favicon-route-html-order-");
     const iconPath = path.join(projectDir, "public", "brand", "logo.svg");
