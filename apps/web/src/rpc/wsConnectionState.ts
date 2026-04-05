@@ -74,7 +74,7 @@ export function getWsConnectionUiState(status: WsConnectionStatus): WsConnection
     return "connected";
   }
 
-  if (!status.online && (status.disconnectedAt !== null || status.phase === "disconnected")) {
+  if (!status.online) {
     return "offline";
   }
 

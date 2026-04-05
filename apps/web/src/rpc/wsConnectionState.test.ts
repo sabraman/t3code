@@ -34,6 +34,12 @@ describe("wsConnectionState", () => {
     expect(getWsConnectionUiState(getWsConnectionStatus())).toBe("offline");
   });
 
+  it("treats an initial offline browser as offline before the first websocket attempt", () => {
+    setBrowserOnlineStatus(false);
+
+    expect(getWsConnectionUiState(getWsConnectionStatus())).toBe("offline");
+  });
+
   it("stays in the initial connecting state until the first disconnect", () => {
     recordWsConnectionAttempt("ws://localhost:3020/ws");
 
